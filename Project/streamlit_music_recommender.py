@@ -8,6 +8,8 @@ Features:
  - Show metadata columns (artist, track, genres, year) if present
  - Train KMeans, visualize with PCA, show cluster distribution
  - Input custom song features to predict cluster + nearest-neighbor recommendations
+ - Mood-based recommendations (Happy, Sad, Energetic, Calm/Relaxed, Romantic, Party, Focused/Study, Workout)
+ - Year-based recommendations (single year or year range with multiple sorting options)
  - Download trained model (pickle)
 
 Run:
@@ -228,6 +230,312 @@ if submit:
     display_cols = [c for c in display_cols if c in recs.columns]
     st.write('### Top similar songs from dataset')
     st.dataframe(recs[display_cols].reset_index(drop=True))
+
+
+# Mood-based recommendations
+st.write('---')
+st.write('## 🎭 Mood-Based Recommendations')
+
+# Define mood profiles based on audio features
+def get_mood_profile(mood_name):
+    """Returns feature ranges for different moods"""
+    moods = {
+        'Happy': {
+            'valence': (0.6, 1.0),
+            'danceability': (0.6, 1.0),
+            'energy': (0.4, 1.0)
+        },
+        'Sad': {
+            'valence': (0.0, 0.4),
+            'energy': (0.0, 0.4),
+            'danceability': (0.0, 0.5)
+        },
+        'Energetic': {
+            'energy': (0.7, 1.0),
+            'tempo': (120, 200),
+            'danceability': (0.5, 1.0)
+        },
+        'Calm/Relaxed': {
+            'energy': (0.0, 0.4),
+            'tempo': (60, 100),
+            'acousticness': (0.5, 1.0),
+            'valence': (0.3, 0.7)
+        },
+        'Romantic': {
+            'valence': (0.4, 0.6),
+            'energy': (0.0, 0.5),
+            'tempo': (60, 100),
+            'acousticness': (0.3, 1.0)
+        },
+        'Party': {
+            'danceability': (0.7, 1.0),
+            'energy': (0.7, 1.0),
+            'tempo': (120, 200),
+            'valence': (0.5, 1.0)
+        },
+        'Focused/Study': {
+            'instrumentalness': (0.3, 1.0),
+            'energy': (0.2, 0.6),
+            'speechiness': (0.0, 0.3),
+            'tempo': (70, 120)
+        },
+        'Workout': {
+            'energy': (0.8, 1.0),
+            'tempo': (130, 200),
+            'danceability': (0.6, 1.0),
+            'valence': (0.5, 1.0)
+        }
+    }
+    return moods.get(mood_name, {})
+
+# Mood selection
+mood_options = ['Happy', 'Sad', 'Energetic', 'Calm/Relaxed', 'Romantic', 'Party', 'Focused/Study', 'Workout']
+selected_mood = st.selectbox('Select your mood', mood_options)
+
+num_recommendations = st.slider('Number of recommendations', min_value=5, max_value=50, value=20)
+
+if st.button('Get Mood-Based Recommendations'):
+    mood_profile = get_mood_profile(selected_mood)
+    
+    if not mood_profile:
+        st.error('Invalid mood selected')
+    else:
+        # Start with all songs
+        mood_df = df.copy()
+        
+        # Filter songs based on mood profile
+        for feature, (min_val, max_val) in mood_profile.items():
+            if feature in mood_df.columns:
+                # Convert to numeric
+                mood_df[feature] = pd.to_numeric(mood_df[feature], errors='coerce')
+                # Filter by range
+                mood_df = mood_df[
+                    (mood_df[feature] >= min_val) & 
+                    (mood_df[feature] <= max_val)
+                ]
+            else:
+                # If feature doesn't exist, show warning but continue
+                st.warning(f"Feature '{feature}' not found in dataset. Skipping this filter.")
+        
+        if len(mood_df) == 0:
+            st.warning(f'No songs found matching the "{selected_mood}" mood profile. Try a different mood or adjust the filters.')
+        else:
+            # Score songs based on how well they match the mood
+            # Calculate a match score (sum of normalized feature values)
+            score_data = {}
+            for feature in mood_profile.keys():
+                if feature in mood_df.columns:
+                    mood_df[feature] = pd.to_numeric(mood_df[feature], errors='coerce')
+                    # Normalize feature to 0-1 range for scoring
+                    feature_min = mood_df[feature].min()
+                    feature_max = mood_df[feature].max()
+                    if feature_max > feature_min:
+                        normalized = (mood_df[feature] - feature_min) / (feature_max - feature_min)
+                    else:
+                        normalized = mood_df[feature] / feature_max if feature_max > 0 else mood_df[feature]
+                    score_data[feature] = normalized
+            
+            if score_data:
+                # Create a DataFrame from normalized scores and average them
+                score_df = pd.DataFrame(score_data)
+                mood_df['mood_match_score'] = score_df.mean(axis=1)
+                # Sort by match score (descending)
+                mood_df = mood_df.sort_values('mood_match_score', ascending=False)
+            else:
+                # If no scoring possible, just shuffle
+                mood_df = mood_df.sample(frac=1).reset_index(drop=True)
+            
+            # Display top recommendations
+            st.success(f'Found {len(mood_df)} songs matching "{selected_mood}" mood!')
+            recommendations = mood_df.head(num_recommendations)
+            
+            # Prepare display columns
+            display_cols_mood = metadata_cols.copy()
+            # Add mood-relevant features
+            for feat in mood_profile.keys():
+                if feat in recommendations.columns and feat not in display_cols_mood:
+                    display_cols_mood.append(feat)
+            # Add match score if available
+            if 'mood_match_score' in recommendations.columns:
+                display_cols_mood.append('mood_match_score')
+            
+            display_cols_mood = [c for c in display_cols_mood if c in recommendations.columns]
+            
+            st.write(f'### Top {min(num_recommendations, len(recommendations))} Recommendations for "{selected_mood}" Mood')
+            st.dataframe(recommendations[display_cols_mood].reset_index(drop=True))
+            
+            # Show mood profile info
+            with st.expander('View Mood Profile Details'):
+                st.write(f'**{selected_mood} Mood Characteristics:**')
+                for feature, (min_val, max_val) in mood_profile.items():
+                    if feature in df.columns:
+                        st.write(f'- **{feature}**: {min_val:.2f} - {max_val:.2f}')
+
+
+# Year-based recommendations
+st.write('---')
+st.write('## 📅 Year-Based Recommendations')
+
+# Check if 'year' column exists in the dataset
+year_col = None
+for col in ['year', 'Year', 'YEAR']:
+    if col in df.columns:
+        year_col = col
+        break
+
+if year_col:
+    # Get year range from dataset
+    df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+    valid_years = df[year_col].dropna()
+    
+    if len(valid_years) > 0:
+        min_year = int(valid_years.min())
+        max_year = int(valid_years.max())
+        
+        st.write(f'Available years: {min_year} - {max_year}')
+        
+        # Year selection options
+        year_option = st.radio(
+            'Select year option',
+            ['Single Year', 'Year Range'],
+            horizontal=True
+        )
+        
+        year_filter_df = pd.DataFrame()
+        
+        if year_option == 'Single Year':
+            selected_year = st.slider('Select year', min_value=min_year, max_value=max_year, value=max_year)
+            year_filter_df = df[df[year_col] == selected_year].copy()
+            st.write(f'**Filtering songs from {selected_year}**')
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                start_year = st.slider('Start year', min_value=min_year, max_value=max_year, value=min_year)
+            with col2:
+                end_year = st.slider('End year', min_value=min_year, max_value=max_year, value=max_year)
+            
+            if start_year > end_year:
+                st.error('Start year must be less than or equal to end year')
+            else:
+                year_filter_df = df[(df[year_col] >= start_year) & (df[year_col] <= end_year)].copy()
+                st.write(f'**Filtering songs from {start_year} to {end_year}**')
+        
+        if len(year_filter_df) > 0:
+            # Sorting options
+            sort_by = st.selectbox(
+                'Sort by',
+                ['Popularity (High to Low)', 'Popularity (Low to High)', 
+                 'Year (Newest First)', 'Year (Oldest First)', 
+                 'Energy (High to Low)', 'Danceability (High to Low)',
+                 'Valence (High to Low)', 'Tempo (High to Low)',
+                 'Random']
+            )
+            
+            num_recommendations_year = st.slider(
+                'Number of recommendations', 
+                min_value=5, 
+                max_value=100, 
+                value=20,
+                key='year_recs'
+            )
+            
+            if st.button('Get Year-Based Recommendations'):
+                # Apply sorting
+                if sort_by == 'Popularity (High to Low)':
+                    if 'popularity' in year_filter_df.columns:
+                        year_filter_df['popularity'] = pd.to_numeric(year_filter_df['popularity'], errors='coerce')
+                        year_filter_df = year_filter_df.sort_values('popularity', ascending=False, na_position='last')
+                    else:
+                        st.warning("'Popularity' column not found. Sorting by year instead.")
+                        year_filter_df = year_filter_df.sort_values(year_col, ascending=False)
+                elif sort_by == 'Popularity (Low to High)':
+                    if 'popularity' in year_filter_df.columns:
+                        year_filter_df['popularity'] = pd.to_numeric(year_filter_df['popularity'], errors='coerce')
+                        year_filter_df = year_filter_df.sort_values('popularity', ascending=True, na_position='last')
+                    else:
+                        st.warning("'Popularity' column not found. Sorting by year instead.")
+                        year_filter_df = year_filter_df.sort_values(year_col, ascending=True)
+                elif sort_by == 'Year (Newest First)':
+                    year_filter_df = year_filter_df.sort_values(year_col, ascending=False)
+                elif sort_by == 'Year (Oldest First)':
+                    year_filter_df = year_filter_df.sort_values(year_col, ascending=True)
+                elif sort_by == 'Energy (High to Low)':
+                    if 'energy' in year_filter_df.columns:
+                        year_filter_df['energy'] = pd.to_numeric(year_filter_df['energy'], errors='coerce')
+                        year_filter_df = year_filter_df.sort_values('energy', ascending=False, na_position='last')
+                    else:
+                        st.warning("'Energy' column not found. Sorting by year instead.")
+                        year_filter_df = year_filter_df.sort_values(year_col, ascending=False)
+                elif sort_by == 'Danceability (High to Low)':
+                    if 'danceability' in year_filter_df.columns:
+                        year_filter_df['danceability'] = pd.to_numeric(year_filter_df['danceability'], errors='coerce')
+                        year_filter_df = year_filter_df.sort_values('danceability', ascending=False, na_position='last')
+                    else:
+                        st.warning("'Danceability' column not found. Sorting by year instead.")
+                        year_filter_df = year_filter_df.sort_values(year_col, ascending=False)
+                elif sort_by == 'Valence (High to Low)':
+                    if 'valence' in year_filter_df.columns:
+                        year_filter_df['valence'] = pd.to_numeric(year_filter_df['valence'], errors='coerce')
+                        year_filter_df = year_filter_df.sort_values('valence', ascending=False, na_position='last')
+                    else:
+                        st.warning("'Valence' column not found. Sorting by year instead.")
+                        year_filter_df = year_filter_df.sort_values(year_col, ascending=False)
+                elif sort_by == 'Tempo (High to Low)':
+                    if 'tempo' in year_filter_df.columns:
+                        year_filter_df['tempo'] = pd.to_numeric(year_filter_df['tempo'], errors='coerce')
+                        year_filter_df = year_filter_df.sort_values('tempo', ascending=False, na_position='last')
+                    else:
+                        st.warning("'Tempo' column not found. Sorting by year instead.")
+                        year_filter_df = year_filter_df.sort_values(year_col, ascending=False)
+                else:  # Random
+                    year_filter_df = year_filter_df.sample(frac=1).reset_index(drop=True)
+                
+                # Get recommendations
+                recommendations_year = year_filter_df.head(num_recommendations_year)
+                
+                # Prepare display columns
+                display_cols_year = metadata_cols.copy()
+                if year_col not in display_cols_year:
+                    display_cols_year.append(year_col)
+                
+                # Add sorting column if it's a feature
+                sort_col_map = {
+                    'Popularity (High to Low)': 'popularity',
+                    'Popularity (Low to High)': 'popularity',
+                    'Energy (High to Low)': 'energy',
+                    'Danceability (High to Low)': 'danceability',
+                    'Valence (High to Low)': 'valence',
+                    'Tempo (High to Low)': 'tempo'
+                }
+                
+                if sort_by in sort_col_map:
+                    sort_col = sort_col_map[sort_by]
+                    if sort_col in recommendations_year.columns and sort_col not in display_cols_year:
+                        display_cols_year.append(sort_col)
+                
+                # Add some common audio features
+                for feat in ['energy', 'danceability', 'valence', 'tempo', 'popularity']:
+                    if feat in recommendations_year.columns and feat not in display_cols_year:
+                        display_cols_year.append(feat)
+                
+                display_cols_year = [c for c in display_cols_year if c in recommendations_year.columns]
+                
+                st.success(f'Found {len(year_filter_df)} songs in selected year(s)!')
+                st.write(f'### Top {min(num_recommendations_year, len(recommendations_year))} Recommendations ({sort_by})')
+                st.dataframe(recommendations_year[display_cols_year].reset_index(drop=True))
+                
+                # Show year distribution
+                if year_option == 'Year Range':
+                    with st.expander('View Year Distribution'):
+                        year_counts = year_filter_df[year_col].value_counts().sort_index()
+                        st.bar_chart(year_counts)
+        else:
+            st.info(f'No songs found in the selected year(s). Try selecting a different year or year range.')
+    else:
+        st.warning("No valid year data found in the dataset.")
+else:
+    st.info("⚠️ 'Year' column not found in this dataset. Year-based recommendations are not available.")
+    st.write("Available columns:", ', '.join(df.columns.tolist()[:10]))
 
 
 # Explore clusters
